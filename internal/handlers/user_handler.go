@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"net/http"
 	"tayo-booking/internal/service"
 
@@ -27,7 +26,9 @@ func (h *UserHandler) Register(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	user, err := h.Service.RegisterUser(context.Background(), req.Name, req.Email)
+
+	ctx := c.Request.Context()
+	user, err := h.Service.RegisterUser(ctx, req.Name, req.Email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
