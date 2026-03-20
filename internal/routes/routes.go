@@ -1,14 +1,17 @@
 package routes
 
 import (
-	"github.com/gin-gonic/gin"
 	"tayo-booking/internal/handlers"
+
+	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter() *gin.Engine {
+// Accept handler dependencies
+func SetupRouter(helloHandler *handlers.HelloHandler, userHandler *handlers.UserHandler) *gin.Engine {
 	r := gin.Default()
 
-	r.GET("/hello", handlers.HelloHandler)
+	r.GET("/hello", helloHandler.Handle)
+	r.POST("/users/register", userHandler.Register)
 
 	return r
 }
