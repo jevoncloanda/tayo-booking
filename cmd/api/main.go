@@ -28,11 +28,12 @@ func main() {
 
 	// Wire up dependencies for user registration
 	userRepo := repository.NewUserRepository(conn)
-	userService := service.NewUserService(userRepo)
-	userHandler := handlers.NewUserHandler(userService)
+	refreshTokenRepo := repository.NewRefreshTokenRepository(conn)
+	authService := service.NewAuthService(userRepo, refreshTokenRepo)
+	authHandler := handlers.NewAuthHandler(authService)
 	helloHandler := &handlers.HelloHandler{}
 
-	r := routes.SetupRouter(helloHandler, userHandler)
+	r := routes.SetupRouter(helloHandler, authHandler)
 	log.Println("Server running on :8080")
 	r.Run(":8080")
 }

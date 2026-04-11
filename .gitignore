@@ -1,2 +1,30 @@
+# Air temp build
+tmp/
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build output
+main
+main.exe
+
+# Go build cache (optional)
+*.out
+
+# Logs
+*.log
+
+# Environment variables
 .env
-bin/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

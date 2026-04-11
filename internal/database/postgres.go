@@ -14,7 +14,15 @@ func Connect() (*pgx.Conn, error) {
 		return nil, errors.New("DATABASE_URL is not set")
 	}
 
-	conn, err := pgx.Connect(context.Background(), databaseURL)
+	// Parse config instead of direct connect
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	config.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+
+	conn, err := pgx.ConnectConfig(context.Background(), config)
 	if err != nil {
 		return nil, err
 	}
