@@ -3,11 +3,11 @@ package service
 import (
 	"context"
 	"errors"
-	"tayo-booking/internal/models"
-	"tayo-booking/internal/repository"
+	"os"
 	"time"
 
-	"os"
+	"tayo-booking/internal/models"
+	"tayo-booking/internal/repository"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -26,7 +26,6 @@ func NewAuthService(userRepo *repository.UserRepository, refreshTokenRepo *repos
 }
 
 func (s *AuthService) RegisterUserWithPassword(ctx context.Context, name, email, password string) (*models.User, error) {
-	// Check for duplicate email
 	existing, err := s.UserRepo.GetUserByEmail(ctx, email)
 	if err == nil && existing != nil {
 		return nil, errors.New("email already registered")
@@ -50,11 +49,13 @@ type TokenPair struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-// Generate JWT
-func generateJWT(userID string) (string, error) {
+// role is now embedded in the JWT so AdminMiddleware
+// never needs a DB round-trip on every request.
+func generateJWT(userID, role string) (string, error) {
 	jwtSecret := []byte(os.Getenv("JWT_SECRET"))
 	claims := jwt.MapClaims{
 		"user_id": userID,
+		"role":    role,
 		"exp":     time.Now().Add(time.Hour * 1).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -62,7 +63,6 @@ func generateJWT(userID string) (string, error) {
 }
 
 func (s *AuthService) LoginUser(ctx context.Context, email, password, userAgent, ip string) (*TokenPair, error) {
-	// Verify password using PostgreSQL's crypt
 	match, err := s.UserRepo.VerifyPassword(ctx, email, password)
 	if err != nil || !match {
 		return nil, errors.New("invalid email or password")
@@ -73,17 +73,14 @@ func (s *AuthService) LoginUser(ctx context.Context, email, password, userAgent,
 		return nil, errors.New("user not found")
 	}
 
-	// Generate JWT
-	accessToken, err := generateJWT(user.ID.String())
+	accessToken, err := generateJWT(user.ID.String(), user.Role)
 	if err != nil {
 		return nil, errors.New("failed to generate token")
 	}
 
-	// Generate refresh token (random UUID)
 	refreshToken := uuid.New().String()
-	expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7 days
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
-	// Store refresh token
 	err = s.RefreshTokenRepo.StoreRefreshToken(ctx, user.ID, refreshToken, expiresAt, userAgent, ip)
 	if err != nil {
 		return nil, errors.New("failed to store refresh token")
@@ -96,19 +93,22 @@ func (s *AuthService) LoginUser(ctx context.Context, email, password, userAgent,
 }
 
 func (s *AuthService) RefreshTokens(ctx context.Context, refreshToken, userAgent, ip string) (*TokenPair, error) {
-	// Validate refresh token
 	userID, err := s.RefreshTokenRepo.ValidateRefreshToken(ctx, refreshToken, userAgent, ip)
 	if err != nil {
 		return nil, errors.New("invalid or expired refresh token")
 	}
 
-	// Generate new access token
-	accessToken, err := generateJWT(userID.String())
+	// Fetch user to get current role — role may have changed since last login
+	user, err := s.UserRepo.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, errors.New("user not found")
+	}
+
+	accessToken, err := generateJWT(userID.String(), user.Role)
 	if err != nil {
 		return nil, errors.New("failed to generate access token")
 	}
 
-	// Rotate refresh token: create new, revoke old
 	newRefreshToken := uuid.New().String()
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 	err = s.RefreshTokenRepo.RotateRefreshToken(ctx, refreshToken, newRefreshToken, expiresAt, userAgent, ip)

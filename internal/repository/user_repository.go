@@ -5,6 +5,7 @@ import (
 	"log"
 	"tayo-booking/internal/models"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -38,12 +39,24 @@ func (r *UserRepository) CreateUserWithAuth(ctx context.Context, user *models.Us
 }
 
 func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
-	query := `SELECT id, name, email, created_at FROM users WHERE email = $1`
+	query := `SELECT id, name, email, role, created_at FROM users WHERE email = $1`
 	row := r.DB.QueryRow(ctx, query, email)
 	var user models.User
-	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.CreatedAt)
+	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Role, &user.CreatedAt)
 	if err != nil {
 		log.Println("[GetUserByEmail] error scanning user:", err)
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (r *UserRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+	query := `SELECT id, name, email, role, created_at FROM users WHERE id = $1`
+	row := r.DB.QueryRow(ctx, query, id)
+	var user models.User
+	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.Role, &user.CreatedAt)
+	if err != nil {
+		log.Println("[GetUserByID] error scanning user:", err)
 		return nil, err
 	}
 	return &user, nil

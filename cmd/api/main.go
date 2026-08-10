@@ -26,14 +26,20 @@ func main() {
 
 	log.Println("DB Connected")
 
-	// Wire up dependencies for user registration
+	// Auth
 	userRepo := repository.NewUserRepository(conn)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(conn)
 	authService := service.NewAuthService(userRepo, refreshTokenRepo)
 	authHandler := handlers.NewAuthHandler(authService)
+
+	// Trips
+	tripRepo := repository.NewTripRepository(conn)
+	tripService := service.NewTripService(tripRepo)
+	tripHandler := handlers.NewTripHandler(tripService)
+
 	helloHandler := &handlers.HelloHandler{}
 
-	r := routes.SetupRouter(helloHandler, authHandler)
+	r := routes.SetupRouter(helloHandler, authHandler, tripHandler)
 	log.Println("Server running on :8080")
 	r.Run(":8080")
 }
