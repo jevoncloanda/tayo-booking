@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"tayo-booking/internal/repository"
 	"tayo-booking/internal/service"
 	"time"
 
@@ -75,11 +76,12 @@ func (h *TripHandler) GetByID(c *gin.Context) {
 }
 
 type CreateTripRequest struct {
-	RouteID       string  `json:"route_id"       binding:"required,uuid"`
-	BusID         string  `json:"bus_id"         binding:"required,uuid"`
-	DepartureTime string  `json:"departure_time" binding:"required"`
-	ArrivalTime   string  `json:"arrival_time"   binding:"required"`
-	Price         float64 `json:"price"          binding:"required,gt=0"`
+	RouteID                string  `json:"route_id"               binding:"required,uuid"`
+	BusID                  string  `json:"bus_id"                 binding:"required,uuid"`
+	DepartureTime          string  `json:"departure_time"         binding:"required"`
+	ArrivalTime            string  `json:"arrival_time"           binding:"required"`
+	Price                  float64 `json:"price"                  binding:"required,gt=0"`
+	MaxCancellationMinutes int     `json:"max_cancellation_minutes"`
 }
 
 func (h *TripHandler) Create(c *gin.Context) {
@@ -110,7 +112,7 @@ func (h *TripHandler) Create(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	trip, err := h.Service.CreateTrip(ctx, routeID, busID, departureTime, arrivalTime, req.Price)
+	trip, err := h.Service.CreateTrip(ctx, routeID, busID, departureTime, arrivalTime, req.Price, req.MaxCancellationMinutes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -150,4 +152,70 @@ func (h *TripHandler) GetSeats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"seats": seats})
+}
+
+type UpdateTripRequest struct {
+	DepartureTime          *string  `json:"departure_time"`
+	ArrivalTime            *string  `json:"arrival_time"`
+	Price                  *float64 `json:"price"`
+	MaxCancellationMinutes *int     `json:"max_cancellation_minutes"`
+}
+
+func (h *TripHandler) Update(c *gin.Context) {
+	tripID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid trip ID"})
+		return
+	}
+
+	var req UpdateTripRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Validation failed", "details": err.Error()})
+		return
+	}
+
+	const layout = time.RFC3339
+	params := repository.UpdateTripParams{
+		Price:                  req.Price,
+		MaxCancellationMinutes: req.MaxCancellationMinutes,
+	}
+
+	if req.DepartureTime != nil {
+		t, err := time.Parse(layout, *req.DepartureTime)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid departure_time format, use RFC3339"})
+			return
+		}
+		params.DepartureTime = &t
+	}
+
+	if req.ArrivalTime != nil {
+		t, err := time.Parse(layout, *req.ArrivalTime)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid arrival_time format, use RFC3339"})
+			return
+		}
+		params.ArrivalTime = &t
+	}
+
+	// Validate arrival > departure if both provided.
+	if params.DepartureTime != nil && params.ArrivalTime != nil {
+		if !params.ArrivalTime.After(*params.DepartureTime) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "arrival_time must be after departure_time"})
+			return
+		}
+	}
+
+	ctx := c.Request.Context()
+	trip, err := h.Service.UpdateTrip(ctx, tripID, params)
+	if err != nil {
+		if err.Error() == "trip not found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Trip not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, trip)
 }

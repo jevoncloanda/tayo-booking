@@ -1,13 +1,16 @@
 package models
 
 import (
-    "time"
-    "github.com/google/uuid"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 type Bus struct {
-    ID         uuid.UUID `db:"id" json:"id"`
-    Name       string    `db:"name" json:"name"`
-    TotalSeats int       `db:"total_seats" json:"total_seats"`
-    CreatedAt  time.Time `db:"created_at" json:"created_at"`
+	ID           uuid.UUID `db:"id"            json:"id"`
+	Name         string    `db:"name"          json:"name"`
+	TotalSeats   int       `db:"total_seats"   json:"total_seats"`
+	ColumnsLeft  int       `db:"columns_left"  json:"columns_left"`
+	ColumnsRight int       `db:"columns_right" json:"columns_right"`
+	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"tayo-booking/internal/models"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -195,41 +197,10 @@ func (r *TripRepository) GetTripDetail(ctx context.Context, tripID uuid.UUID) (*
 	return &d, nil
 }
 
-// GetAvailableSeats returns seats on a trip's bus that have no confirmed booking.
-func (r *TripRepository) GetAvailableSeats(ctx context.Context, tripID uuid.UUID) ([]models.Seat, error) {
-	rows, err := r.DB.Query(ctx, `
-        SELECT s.id, s.bus_id, s.seat_number, s.created_at
-        FROM seats s
-        JOIN trips t ON t.bus_id = s.bus_id
-        WHERE t.id = $1
-        AND s.id NOT IN (
-            SELECT seat_id FROM bookings
-            WHERE trip_id = $1
-            AND status = 'confirmed'
-            AND seat_id IS NOT NULL
-        )
-        ORDER BY s.seat_number
-    `, tripID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var seats []models.Seat
-	for rows.Next() {
-		var seat models.Seat
-		if err := rows.Scan(&seat.ID, &seat.BusID, &seat.SeatNumber, &seat.CreatedAt); err != nil {
-			return nil, err
-		}
-		seats = append(seats, seat)
-	}
-	return seats, nil
-}
-
 func (r *TripRepository) CreateTrip(ctx context.Context, trip *models.Trip) error {
 	query := `
-        INSERT INTO trips (id, route_id, bus_id, departure_time, arrival_time, price, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        insert into trips (id, route_id, bus_id, departure_time, arrival_time, price, max_cancellation_minutes, created_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
     `
 	_, err := r.DB.Exec(ctx, query,
 		trip.ID,
@@ -238,12 +209,92 @@ func (r *TripRepository) CreateTrip(ctx context.Context, trip *models.Trip) erro
 		trip.DepartureTime,
 		trip.ArrivalTime,
 		trip.Price,
+		trip.MaxCancellationMinutes,
 		trip.CreatedAt,
 	)
 	if err != nil {
 		log.Println("[CreateTrip] error:", err)
 	}
 	return err
+}
+
+// UpdateTripParams holds optional fields for a partial trip update.
+type UpdateTripParams struct {
+	DepartureTime          *time.Time
+	ArrivalTime            *time.Time
+	Price                  *float64
+	MaxCancellationMinutes *int
+}
+
+// UpdateTrip performs a partial update on a trip, only touching provided fields.
+// Returns pgx.ErrNoRows if the trip does not exist.
+func (r *TripRepository) UpdateTrip(ctx context.Context, tripID uuid.UUID, p UpdateTripParams) (*models.Trip, error) {
+	setClauses := []string{}
+	args := []any{}
+	argIdx := 1
+
+	if p.DepartureTime != nil {
+		setClauses = append(setClauses, fmt.Sprintf("departure_time = $%d", argIdx))
+		args = append(args, *p.DepartureTime)
+		argIdx++
+	}
+	if p.ArrivalTime != nil {
+		setClauses = append(setClauses, fmt.Sprintf("arrival_time = $%d", argIdx))
+		args = append(args, *p.ArrivalTime)
+		argIdx++
+	}
+	if p.Price != nil {
+		setClauses = append(setClauses, fmt.Sprintf("price = $%d", argIdx))
+		args = append(args, *p.Price)
+		argIdx++
+	}
+	if p.MaxCancellationMinutes != nil {
+		setClauses = append(setClauses, fmt.Sprintf("max_cancellation_minutes = $%d", argIdx))
+		args = append(args, *p.MaxCancellationMinutes)
+		argIdx++
+	}
+
+	if len(setClauses) == 0 {
+		// nothing to update — fetch and return current state
+		return r.getTripByID(ctx, tripID)
+	}
+
+	args = append(args, tripID)
+	query := fmt.Sprintf(
+		"update trips set %s where id = $%d returning id, route_id, bus_id, departure_time, arrival_time, price, max_cancellation_minutes, created_at",
+		strings.Join(setClauses, ", "),
+		argIdx,
+	)
+
+	row := r.DB.QueryRow(ctx, query, args...)
+	var trip models.Trip
+	err := row.Scan(
+		&trip.ID, &trip.RouteID, &trip.BusID,
+		&trip.DepartureTime, &trip.ArrivalTime,
+		&trip.Price, &trip.MaxCancellationMinutes, &trip.CreatedAt,
+	)
+	if err != nil {
+		log.Println("[UpdateTrip] error:", err)
+		return nil, err
+	}
+	return &trip, nil
+}
+
+func (r *TripRepository) getTripByID(ctx context.Context, tripID uuid.UUID) (*models.Trip, error) {
+	query := `
+		select id, route_id, bus_id, departure_time, arrival_time, price, max_cancellation_minutes, created_at
+		from trips where id = $1
+	`
+	var trip models.Trip
+	err := r.DB.QueryRow(ctx, query, tripID).Scan(
+		&trip.ID, &trip.RouteID, &trip.BusID,
+		&trip.DepartureTime, &trip.ArrivalTime,
+		&trip.Price, &trip.MaxCancellationMinutes, &trip.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &trip, nil
 }
 
 type SeatAvailability struct {
@@ -294,7 +345,7 @@ func (r *TripRepository) GetSeatsForSegment(ctx context.Context, tripID, fromSto
             JOIN route_stops btrs ON btrs.stop_id = b.to_stop_id
                 AND btrs.route_id = (SELECT route_id FROM trip_route)
             WHERE b.trip_id = $1
-              AND b.status = 'confirmed'
+              AND b.status IN ('confirmed', 'pending')
               AND bfrs.stop_order < (SELECT stop_order FROM to_order)
               AND btrs.stop_order > (SELECT stop_order FROM from_order)
         )

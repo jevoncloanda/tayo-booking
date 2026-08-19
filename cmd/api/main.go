@@ -37,9 +37,29 @@ func main() {
 	tripService := service.NewTripService(tripRepo)
 	tripHandler := handlers.NewTripHandler(tripService)
 
+	// Buses
+	busRepo := repository.NewBusRepository(conn)
+	busService := service.NewBusService(busRepo)
+	busHandler := handlers.NewBusHandler(busService)
+
+	// Stops
+	stopRepo := repository.NewStopRepository(conn)
+	stopService := service.NewStopService(stopRepo)
+	stopHandler := handlers.NewStopHandler(stopService)
+
+	// Routes
+	routeRepo := repository.NewRouteRepository(conn)
+	routeService := service.NewRouteService(routeRepo)
+	routeHandler := handlers.NewRouteHandler(routeService)
+
+	// Bookings
+	bookingRepo := repository.NewBookingRepository(conn)
+	bookingService := service.NewBookingService(bookingRepo)
+	bookingHandler := handlers.NewBookingHandler(bookingService)
+
 	helloHandler := &handlers.HelloHandler{}
 
-	r := routes.SetupRouter(helloHandler, authHandler, tripHandler)
+	r := routes.SetupRouter(helloHandler, authHandler, tripHandler, busHandler, stopHandler, routeHandler, bookingHandler)
 	log.Println("Server running on :8080")
 	r.Run(":8080")
 }
