@@ -40,3 +40,13 @@ func (h *StopHandler) Create(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, stop)
 }
+
+func (h *StopHandler) GetAll(c *gin.Context) {
+	ctx := c.Request.Context()
+	stops, err := h.Service.GetAllStops(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch stops"})
+		return
+	}
+	c.JSON(http.StatusOK, stops)
+}

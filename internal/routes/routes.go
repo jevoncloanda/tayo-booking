@@ -1,10 +1,34 @@
 package routes
 
 import (
+	"net/http"
+	"os"
+
 	"tayo-booking/internal/handlers"
 
 	"github.com/gin-gonic/gin"
 )
+
+func corsMiddleware() gin.HandlerFunc {
+	allowedOrigin := os.Getenv("FRONTEND_URL")
+	if allowedOrigin == "" {
+		allowedOrigin = "http://localhost:3000"
+	}
+
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", allowedOrigin)
+		c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+
+		c.Next()
+	}
+}
 
 func SetupRouter(
 	helloHandler *handlers.HelloHandler,
@@ -16,6 +40,7 @@ func SetupRouter(
 	bookingHandler *handlers.BookingHandler,
 ) *gin.Engine {
 	r := gin.Default()
+	r.Use(corsMiddleware())
 
 	r.GET("/hello", helloHandler.Handle)
 
@@ -30,6 +55,9 @@ func SetupRouter(
 	r.GET("/trips", tripHandler.Search)
 	r.GET("/trips/:id", tripHandler.GetByID)
 	r.GET("/trips/:id/seats", tripHandler.GetSeats)
+
+	// Public stop routes
+	r.GET("/stops", stopHandler.GetAll)
 
 	// User booking routes (authenticated)
 	bookings := r.Group("/bookings")

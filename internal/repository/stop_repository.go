@@ -28,6 +28,26 @@ func (r *StopRepository) CreateStop(ctx context.Context, stop *models.Stop) erro
 	return err
 }
 
+func (r *StopRepository) GetAllStops(ctx context.Context) ([]models.Stop, error) {
+	query := `select id, name, city, created_at from stops order by city, name`
+	rows, err := r.DB.Query(ctx, query)
+	if err != nil {
+		log.Println("[GetAllStops] error:", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stops []models.Stop
+	for rows.Next() {
+		var s models.Stop
+		if err := rows.Scan(&s.ID, &s.Name, &s.City, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		stops = append(stops, s)
+	}
+	return stops, rows.Err()
+}
+
 func (r *StopRepository) GetStopByNameAndCity(ctx context.Context, name, city string) (*models.Stop, error) {
 	query := `select id, name, city, created_at from stops where name = $1 and city = $2`
 	row := r.DB.QueryRow(ctx, query, name, city)

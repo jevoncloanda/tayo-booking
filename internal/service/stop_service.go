@@ -39,3 +39,14 @@ func (s *StopService) CreateStop(ctx context.Context, name, city string) (*model
 	}
 	return stop, nil
 }
+
+func (s *StopService) GetAllStops(ctx context.Context) ([]models.Stop, error) {
+	stops, err := s.StopRepo.GetAllStops(ctx)
+	if err != nil {
+		return nil, errors.New("failed to fetch stops")
+	}
+	if stops == nil {
+		stops = []models.Stop{}
+	}
+	return stops, nil
+}
