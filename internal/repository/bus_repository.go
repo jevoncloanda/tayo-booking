@@ -6,14 +6,14 @@ import (
 	"tayo-booking/internal/models"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type BusRepository struct {
-	DB *pgx.Conn
+	DB *pgxpool.Pool
 }
 
-func NewBusRepository(db *pgx.Conn) *BusRepository {
+func NewBusRepository(db *pgxpool.Pool) *BusRepository {
 	return &BusRepository{DB: db}
 }
 
@@ -99,4 +99,29 @@ func (r *BusRepository) UpdateSeat(ctx context.Context, seatID uuid.UUID, seatNu
 		return nil, err
 	}
 	return &s, nil
+}
+
+func (r *BusRepository) ListBuses(ctx context.Context) ([]models.Bus, error) {
+	query := `
+		select id, name, total_seats, columns_left, columns_right, created_at
+		from buses
+		order by created_at desc
+	`
+	rows, err := r.DB.Query(ctx, query)
+	if err != nil {
+		log.Println("[ListBuses] query error:", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	buses := []models.Bus{}
+	for rows.Next() {
+		var b models.Bus
+		if err := rows.Scan(&b.ID, &b.Name, &b.TotalSeats, &b.ColumnsLeft, &b.ColumnsRight, &b.CreatedAt); err != nil {
+			log.Println("[ListBuses] scan error:", err)
+			return nil, err
+		}
+		buses = append(buses, b)
+	}
+	return buses, rows.Err()
 }

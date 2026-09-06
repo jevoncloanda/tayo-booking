@@ -62,3 +62,11 @@ func (s *RouteService) CreateRouteStop(ctx context.Context, routeID, stopID uuid
 	}
 	return rs, nil
 }
+
+func (s *RouteService) ListRoutes(ctx context.Context) ([]models.RouteDetail, error) {
+	routes, err := s.RouteRepo.ListRoutes(ctx)
+	if err != nil {
+		return nil, errors.New("failed to list routes")
+	}
+	return routes, nil
+}

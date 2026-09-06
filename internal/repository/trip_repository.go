@@ -9,14 +9,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type TripRepository struct {
-	DB *pgx.Conn
+	DB *pgxpool.Pool
 }
 
-func NewTripRepository(db *pgx.Conn) *TripRepository {
+func NewTripRepository(db *pgxpool.Pool) *TripRepository {
 	return &TripRepository{DB: db}
 }
 
@@ -41,6 +41,8 @@ func (r *TripRepository) SearchTrips(ctx context.Context, f TripFilter) ([]model
             b.id   AS bus_id,
             b.name AS bus_name,
             b.total_seats,
+            b.columns_left,
+            b.columns_right,
             t.departure_time,
             t.arrival_time,
             t.price,
@@ -126,6 +128,8 @@ func (r *TripRepository) SearchTrips(ctx context.Context, f TripFilter) ([]model
 			&trip.Bus.ID,
 			&trip.Bus.Name,
 			&trip.Bus.TotalSeats,
+			&trip.Bus.ColumnsLeft,
+			&trip.Bus.ColumnsRight,
 			&trip.DepartureTime,
 			&trip.ArrivalTime,
 			&trip.Price,
@@ -153,7 +157,7 @@ func (r *TripRepository) GetTripDetail(ctx context.Context, tripID uuid.UUID) (*
 	// Fetch trip + route + bus
 	tripRow := r.DB.QueryRow(ctx, `
         SELECT
-            t.id, r.id, r.name, b.id, b.name, b.total_seats,
+            t.id, r.id, r.name, b.id, b.name, b.total_seats, b.columns_left, b.columns_right,
             t.departure_time, t.arrival_time, t.price
         FROM trips t
         JOIN routes r ON r.id = t.route_id
@@ -165,7 +169,7 @@ func (r *TripRepository) GetTripDetail(ctx context.Context, tripID uuid.UUID) (*
 	err := tripRow.Scan(
 		&d.ID,
 		&d.Route.ID, &d.Route.Name,
-		&d.Bus.ID, &d.Bus.Name, &d.Bus.TotalSeats,
+		&d.Bus.ID, &d.Bus.Name, &d.Bus.TotalSeats, &d.Bus.ColumnsLeft, &d.Bus.ColumnsRight,
 		&d.DepartureTime, &d.ArrivalTime, &d.Price,
 	)
 	if err != nil {
@@ -186,7 +190,7 @@ func (r *TripRepository) GetTripDetail(ctx context.Context, tripID uuid.UUID) (*
 	defer rows.Close()
 
 	for rows.Next() {
-		var entry models.TripStopEntry
+		var entry models.StopEntry
 		err := rows.Scan(&entry.StopOrder, &entry.Stop.ID, &entry.Stop.Name, &entry.Stop.City)
 		if err != nil {
 			return nil, err

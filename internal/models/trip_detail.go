@@ -12,9 +12,13 @@ type RouteInfo struct {
 }
 
 type BusInfo struct {
-	ID         uuid.UUID `json:"id"`
-	Name       string    `json:"name"`
-	TotalSeats int       `json:"total_seats"`
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	// The seat map needs the aisle position, so the column split travels with
+	// every bus payload rather than only with the admin bus list.
+	TotalSeats   int `json:"total_seats"`
+	ColumnsLeft  int `json:"columns_left"`
+	ColumnsRight int `json:"columns_right"`
 }
 
 type StopInfo struct {
@@ -35,18 +39,19 @@ type TripSummary struct {
 	ToStop        *StopInfo `json:"to_stop,omitempty"`
 }
 
-// Used in GET /trips/:id response
-type TripStopEntry struct {
+// StopEntry is one ordered stop on a route, shared by the trip detail and
+// route list responses.
+type StopEntry struct {
 	StopOrder int      `json:"stop_order"`
 	Stop      StopInfo `json:"stop"`
 }
 
 type TripDetail struct {
-	ID            uuid.UUID       `json:"id"`
-	Route         RouteInfo       `json:"route"`
-	Bus           BusInfo         `json:"bus"`
-	DepartureTime time.Time       `json:"departure_time"`
-	ArrivalTime   time.Time       `json:"arrival_time"`
-	Price         float64         `json:"price"`
-	Stops         []TripStopEntry `json:"stops"`
+	ID            uuid.UUID   `json:"id"`
+	Route         RouteInfo   `json:"route"`
+	Bus           BusInfo     `json:"bus"`
+	DepartureTime time.Time   `json:"departure_time"`
+	ArrivalTime   time.Time   `json:"arrival_time"`
+	Price         float64     `json:"price"`
+	Stops         []StopEntry `json:"stops"`
 }

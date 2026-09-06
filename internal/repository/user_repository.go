@@ -6,14 +6,14 @@ import (
 	"tayo-booking/internal/models"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type UserRepository struct {
-	DB *pgx.Conn
+	DB *pgxpool.Pool
 }
 
-func NewUserRepository(db *pgx.Conn) *UserRepository {
+func NewUserRepository(db *pgxpool.Pool) *UserRepository {
 	return &UserRepository{DB: db}
 }
 

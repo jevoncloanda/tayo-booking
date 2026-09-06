@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 
 	"tayo-booking/internal/database"
@@ -22,7 +21,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
-	defer conn.Close(context.Background())
+	defer conn.Close()
 
 	log.Println("DB Connected")
 

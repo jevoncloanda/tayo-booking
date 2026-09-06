@@ -70,3 +70,12 @@ func (h *BusHandler) UpdateSeat(c *gin.Context) {
 
 	c.JSON(http.StatusOK, seat)
 }
+
+func (h *BusHandler) List(c *gin.Context) {
+	buses, err := h.Service.ListBuses(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, buses)
+}

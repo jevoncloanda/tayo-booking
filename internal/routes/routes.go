@@ -78,6 +78,7 @@ func SetupRouter(
 		admin.PATCH("/trips/:id", tripHandler.Update)
 
 		// Buses & seats
+		admin.GET("/buses", busHandler.List)
 		admin.POST("/buses", busHandler.Create)
 		admin.PATCH("/seats/:id", busHandler.UpdateSeat)
 
@@ -85,6 +86,7 @@ func SetupRouter(
 		admin.POST("/stops", stopHandler.Create)
 
 		// Routes
+		admin.GET("/routes", routeHandler.List)
 		admin.POST("/routes", routeHandler.Create)
 		admin.POST("/route-stops", routeHandler.CreateRouteStop)
 

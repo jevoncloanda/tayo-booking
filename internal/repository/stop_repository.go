@@ -5,14 +5,14 @@ import (
 	"log"
 	"tayo-booking/internal/models"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type StopRepository struct {
-	DB *pgx.Conn
+	DB *pgxpool.Pool
 }
 
-func NewStopRepository(db *pgx.Conn) *StopRepository {
+func NewStopRepository(db *pgxpool.Pool) *StopRepository {
 	return &StopRepository{DB: db}
 }
 

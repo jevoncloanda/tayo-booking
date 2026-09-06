@@ -66,3 +66,12 @@ func (h *RouteHandler) CreateRouteStop(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, rs)
 }
+
+func (h *RouteHandler) List(c *gin.Context) {
+	routes, err := h.Service.ListRoutes(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, routes)
+}

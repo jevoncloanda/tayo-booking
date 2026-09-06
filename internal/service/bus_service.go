@@ -83,3 +83,11 @@ func (s *BusService) UpdateSeat(ctx context.Context, seatID uuid.UUID, seatNumbe
 	}
 	return seat, nil
 }
+
+func (s *BusService) ListBuses(ctx context.Context) ([]models.Bus, error) {
+	buses, err := s.BusRepo.ListBuses(ctx)
+	if err != nil {
+		return nil, errors.New("failed to list buses")
+	}
+	return buses, nil
+}
