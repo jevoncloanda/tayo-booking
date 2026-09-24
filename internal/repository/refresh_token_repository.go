@@ -6,14 +6,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type RefreshTokenRepository struct {
-	DB *pgx.Conn
+	DB *pgxpool.Pool
 }
 
-func NewRefreshTokenRepository(db *pgx.Conn) *RefreshTokenRepository {
+func NewRefreshTokenRepository(db *pgxpool.Pool) *RefreshTokenRepository {
 	return &RefreshTokenRepository{DB: db}
 }
 

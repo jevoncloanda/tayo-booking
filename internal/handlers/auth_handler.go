@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 type AuthHandler struct {
@@ -60,6 +61,16 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	ctx := c.Request.Context()
 	user, err := h.Service.RegisterUserWithPassword(ctx, req.Name, req.Email, req.Password)
 	if err != nil {
+		// A taken email is a client-correctable conflict, not a server fault, so
+		// the client can point at the email field instead of showing a generic
+		// "try again" that will never succeed.
+		if err.Error() == "email already registered" {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":   "Email already registered",
+				"details": gin.H{"email": "An account with this email already exists"},
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -133,7 +144,28 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user_id": userID})
+
+	idStr, ok := userID.(string)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Returns the full user (including role) so clients can tell an admin from
+	// a regular user without a second round-trip.
+	user, err := h.Service.UserRepo.GetUserByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
 }
 
 func (h *AuthHandler) Refresh(c *gin.Context) {
@@ -197,6 +229,22 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Set("user_id", claims["user_id"])
+		c.Set("role", claims["role"])
+		c.Next()
+	}
+}
+
+func AdminMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("role")
+		if !exists {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+		if role != "admin" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
+			return
+		}
 		c.Next()
 	}
 }

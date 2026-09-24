@@ -6,26 +6,37 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func Connect() (*pgx.Conn, error) {
+// Connect opens a pooled connection to Postgres.
+//
+// A pool, not a single *pgx.Conn: one connection is not safe for concurrent use,
+// so any two overlapping HTTP requests would corrupt each other's protocol
+// stream and fail. The pool hands each request its own connection.
+func Connect() (*pgxpool.Pool, error) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		return nil, errors.New("DATABASE_URL is not set")
 	}
 
-	// Parse config instead of direct connect
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, err
 	}
 
-	config.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
-	conn, err := pgx.ConnectConfig(context.Background(), config)
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		return nil, err
 	}
 
-	return conn, nil
+	// NewWithConfig is lazy, so verify the credentials before serving traffic.
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
 }
