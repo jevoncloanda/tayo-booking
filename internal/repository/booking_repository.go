@@ -1,9 +1,12 @@
 package repository
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"tayo-booking/internal/domain"
 	"tayo-booking/internal/models"
 
 	"github.com/google/uuid"
@@ -13,21 +16,99 @@ import (
 
 type BookingRepository struct {
 	DB *pgxpool.Pool
+	// testSchema is set only by the isolated database integration test.
+	testSchema string
 }
 
 func NewBookingRepository(db *pgxpool.Pool) *BookingRepository {
 	return &BookingRepository{DB: db}
 }
 
-// CreateBooking performs an availability check and insert inside a single transaction.
-// Returns "seat unavailable" if the segment overlaps an existing confirmed booking.
-func (r *BookingRepository) CreateBooking(ctx context.Context, booking *models.Booking) error {
+// CreateBooking serializes duplicate requests and competing seat claims.
+// replayed is true when an earlier successful request is returned.
+func (r *BookingRepository) CreateBooking(
+	ctx context.Context,
+	booking *models.Booking,
+	idempotencyKey string,
+	requestHash []byte,
+) (replayed bool, err error) {
 	tx, err := r.DB.Begin(ctx)
 	if err != nil {
-		log.Println("[CreateBooking] begin tx error:", err)
-		return err
+		return false, fmt.Errorf("begin booking transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if r.testSchema != "" {
+		identifier := pgx.Identifier{r.testSchema}.Sanitize()
+		if _, err := tx.Exec(ctx, "set local search_path to "+identifier); err != nil {
+			return false, fmt.Errorf("set booking test schema: %w", err)
+		}
+		var activeSchema string
+		if err := tx.QueryRow(ctx, `select current_schema()`).Scan(&activeSchema); err != nil {
+			return false, fmt.Errorf("verify booking test schema: %w", err)
+		}
+		if activeSchema != r.testSchema {
+			return false, fmt.Errorf("booking test schema mismatch: got %q", activeSchema)
+		}
+	}
+
+	// Every create path takes locks in this order to avoid deadlocks:
+	// logical request first, then physical trip seat.
+	if _, err := tx.Exec(ctx, `
+		select pg_advisory_xact_lock(
+			hashtext('booking-idempotency:' || $1::text),
+			hashtext($2)
+		)
+	`, booking.UserID, idempotencyKey); err != nil {
+		return false, fmt.Errorf("lock booking idempotency key: %w", err)
+	}
+
+	var storedHash []byte
+	err = tx.QueryRow(ctx, `
+		select i.request_hash,
+		       b.id, b.user_id, b.trip_id, b.seat_id,
+		       b.from_stop_id, b.to_stop_id, 'pending', b.created_at
+		from booking_idempotency i
+		join bookings b on b.id = i.booking_id
+		where i.user_id = $1 and i.idempotency_key = $2
+	`, booking.UserID, idempotencyKey).Scan(
+		&storedHash,
+		&booking.ID, &booking.UserID, &booking.TripID, &booking.SeatID,
+		&booking.FromStopID, &booking.ToStopID, &booking.Status, &booking.CreatedAt,
+	)
+	switch {
+	case err == nil:
+		if !bytes.Equal(storedHash, requestHash) {
+			log.Printf("[booking] idempotency conflict user_id=%s", booking.UserID)
+			return false, domain.ErrIdempotencyConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("commit idempotent booking replay: %w", err)
+		}
+		log.Printf("[booking] idempotent replay booking_id=%s user_id=%s", booking.ID, booking.UserID)
+		return true, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return false, fmt.Errorf("read booking idempotency result: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		select pg_advisory_xact_lock(
+			hashtext('booking-seat:' || $1::text),
+			hashtext($2::text)
+		)
+	`, booking.TripID, booking.SeatID); err != nil {
+		return false, fmt.Errorf("lock trip seat: %w", err)
+	}
+
+	fromOrder, toOrder, err := validateStopsOnRoute(ctx, tx, booking.TripID, *booking.FromStopID, *booking.ToStopID)
+	if err != nil {
+		return false, err
+	}
+	if fromOrder >= toOrder {
+		return false, domain.ErrInvalidSegment
+	}
+	if err := validateSeatOnBus(ctx, tx, booking.TripID, *booking.SeatID); err != nil {
+		return false, err
+	}
 
 	// CTE-based availability check — mirrors GetSeatsForSegment pattern.
 	checkQuery := `
@@ -66,11 +147,11 @@ func (r *BookingRepository) CreateBooking(ctx context.Context, booking *models.B
 	var taken bool
 	err = tx.QueryRow(ctx, checkQuery, booking.TripID, booking.SeatID, booking.FromStopID, booking.ToStopID).Scan(&taken)
 	if err != nil {
-		log.Println("[CreateBooking] availability check error:", err)
-		return err
+		return false, fmt.Errorf("check seat availability: %w", err)
 	}
 	if taken {
-		return fmt.Errorf("seat unavailable")
+		log.Printf("[booking] seat conflict trip_id=%s seat_id=%s", booking.TripID, *booking.SeatID)
+		return false, domain.ErrSeatUnavailable
 	}
 
 	insertQuery := `
@@ -88,11 +169,21 @@ func (r *BookingRepository) CreateBooking(ctx context.Context, booking *models.B
 		booking.CreatedAt,
 	)
 	if err != nil {
-		log.Println("[CreateBooking] insert error:", err)
-		return err
+		return false, fmt.Errorf("insert booking: %w", err)
 	}
 
-	return tx.Commit(ctx)
+	if _, err := tx.Exec(ctx, `
+		insert into booking_idempotency (user_id, idempotency_key, request_hash, booking_id)
+		values ($1, $2, $3, $4)
+	`, booking.UserID, idempotencyKey, requestHash, booking.ID); err != nil {
+		return false, fmt.Errorf("store booking idempotency result: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit booking: %w", err)
+	}
+	log.Printf("[booking] created booking_id=%s user_id=%s", booking.ID, booking.UserID)
+	return false, nil
 }
 
 const bookingDetailSelect = `
@@ -324,6 +415,14 @@ func (r *BookingRepository) UpdateBookingStatus(ctx context.Context, id uuid.UUI
 // ValidateStopsOnRoute checks that both stops belong to the trip's route
 // and returns their stop_orders (fromOrder, toOrder).
 func (r *BookingRepository) ValidateStopsOnRoute(ctx context.Context, tripID, fromStopID, toStopID uuid.UUID) (int, int, error) {
+	return validateStopsOnRoute(ctx, r.DB, tripID, fromStopID, toStopID)
+}
+
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func validateStopsOnRoute(ctx context.Context, db queryRower, tripID, fromStopID, toStopID uuid.UUID) (int, int, error) {
 	query := `
 		with trip_route as (
 			select route_id from trips where id = $1
@@ -345,21 +444,25 @@ func (r *BookingRepository) ValidateStopsOnRoute(ctx context.Context, tripID, fr
 			(select stop_order from to_rs)
 	`
 	var fromOrder, toOrder *int
-	err := r.DB.QueryRow(ctx, query, tripID, fromStopID, toStopID).Scan(&fromOrder, &toOrder)
+	err := db.QueryRow(ctx, query, tripID, fromStopID, toStopID).Scan(&fromOrder, &toOrder)
 	if err != nil {
 		return 0, 0, err
 	}
 	if fromOrder == nil {
-		return 0, 0, fmt.Errorf("from_stop_id does not belong to this trip's route")
+		return 0, 0, domain.ErrFromStopNotOnRoute
 	}
 	if toOrder == nil {
-		return 0, 0, fmt.Errorf("to_stop_id does not belong to this trip's route")
+		return 0, 0, domain.ErrToStopNotOnRoute
 	}
 	return *fromOrder, *toOrder, nil
 }
 
 // ValidateSeatOnBus checks that a seat belongs to the trip's bus.
 func (r *BookingRepository) ValidateSeatOnBus(ctx context.Context, tripID, seatID uuid.UUID) error {
+	return validateSeatOnBus(ctx, r.DB, tripID, seatID)
+}
+
+func validateSeatOnBus(ctx context.Context, db queryRower, tripID, seatID uuid.UUID) error {
 	query := `
 		select 1
 		from seats s
@@ -367,10 +470,10 @@ func (r *BookingRepository) ValidateSeatOnBus(ctx context.Context, tripID, seatI
 		where t.id = $1 and s.id = $2
 	`
 	var dummy int
-	err := r.DB.QueryRow(ctx, query, tripID, seatID).Scan(&dummy)
+	err := db.QueryRow(ctx, query, tripID, seatID).Scan(&dummy)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return fmt.Errorf("seat does not belong to this trip's bus")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrSeatNotOnBus
 		}
 		return err
 	}

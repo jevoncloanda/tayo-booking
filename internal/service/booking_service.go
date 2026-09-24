@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"tayo-booking/internal/domain"
 	"tayo-booking/internal/models"
 	"tayo-booking/internal/repository"
 	"time"
@@ -23,27 +26,8 @@ func NewBookingService(bookingRepo *repository.BookingRepository) *BookingServic
 func (s *BookingService) CreateBooking(
 	ctx context.Context,
 	userID, tripID, seatID, fromStopID, toStopID uuid.UUID,
-) (*models.Booking, error) {
-	// Validate from/to stops belong to the trip's route and get their orders.
-	fromOrder, toOrder, err := s.BookingRepo.ValidateStopsOnRoute(ctx, tripID, fromStopID, toStopID)
-	if err != nil {
-		if err.Error() == "from_stop_id does not belong to this trip's route" ||
-			err.Error() == "to_stop_id does not belong to this trip's route" {
-			return nil, err
-		}
-		return nil, errors.New("failed to validate stops")
-	}
-
-	// Validate direction.
-	if fromOrder >= toOrder {
-		return nil, errors.New("from_stop_id must come before to_stop_id on the route")
-	}
-
-	// Validate seat belongs to this trip's bus.
-	if err := s.BookingRepo.ValidateSeatOnBus(ctx, tripID, seatID); err != nil {
-		return nil, err
-	}
-
+	idempotencyKey string,
+) (*models.Booking, bool, error) {
 	now := time.Now()
 	booking := &models.Booking{
 		ID:         uuid.New(),
@@ -56,14 +40,25 @@ func (s *BookingService) CreateBooking(
 		CreatedAt:  now,
 	}
 
-	if err := s.BookingRepo.CreateBooking(ctx, booking); err != nil {
-		if err.Error() == "seat unavailable" {
-			return nil, errors.New("seat unavailable")
+	fingerprint := sha256.Sum256([]byte(
+		"booking:v1\x00" + tripID.String() + "\x00" + seatID.String() + "\x00" +
+			fromStopID.String() + "\x00" + toStopID.String(),
+	))
+	replayed, err := s.BookingRepo.CreateBooking(ctx, booking, idempotencyKey, fingerprint[:])
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrSeatUnavailable),
+			errors.Is(err, domain.ErrFromStopNotOnRoute),
+			errors.Is(err, domain.ErrToStopNotOnRoute),
+			errors.Is(err, domain.ErrInvalidSegment),
+			errors.Is(err, domain.ErrSeatNotOnBus),
+			errors.Is(err, domain.ErrIdempotencyConflict):
+			return nil, false, err
 		}
-		return nil, errors.New("failed to create booking")
+		return nil, false, fmt.Errorf("failed to create booking: %w", err)
 	}
 
-	return booking, nil
+	return booking, replayed, nil
 }
 
 // GetUserBookings returns all bookings for an authenticated user.
@@ -80,18 +75,18 @@ func (s *BookingService) GetBookingByID(ctx context.Context, id, userID uuid.UUI
 	ownerID, _, err := s.BookingRepo.GetBookingOwner(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.New("booking not found")
+			return nil, domain.ErrBookingNotFound
 		}
 		return nil, errors.New("failed to get booking")
 	}
 	if ownerID != userID {
-		return nil, errors.New("forbidden")
+		return nil, domain.ErrForbidden
 	}
 
 	detail, err := s.BookingRepo.GetBookingByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.New("booking not found")
+			return nil, domain.ErrBookingNotFound
 		}
 		return nil, errors.New("failed to get booking")
 	}
@@ -103,21 +98,21 @@ func (s *BookingService) CancelBooking(ctx context.Context, id, userID uuid.UUID
 	ownerID, status, err := s.BookingRepo.GetBookingOwner(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errors.New("booking not found")
+			return domain.ErrBookingNotFound
 		}
 		return errors.New("failed to get booking")
 	}
 
 	if ownerID != userID {
-		return errors.New("forbidden")
+		return domain.ErrForbidden
 	}
 
 	if status == "cancelled" {
-		return errors.New("already cancelled")
+		return domain.ErrBookingAlreadyCancelled
 	}
 
 	if status == "confirmed" {
-		return errors.New("confirmed booking cannot be cancelled by user")
+		return domain.ErrConfirmedBooking
 	}
 
 	// Check cancellation window via trip.
@@ -128,7 +123,7 @@ func (s *BookingService) CancelBooking(ctx context.Context, id, userID uuid.UUID
 	if trip.MaxCancellationMinutes > 0 {
 		cutoff := trip.DepartureTime.Add(-time.Duration(trip.MaxCancellationMinutes) * time.Minute)
 		if time.Now().After(cutoff) {
-			return errors.New("cancellation window has passed")
+			return domain.ErrCancellationWindowPassed
 		}
 	}
 
@@ -158,13 +153,13 @@ func (s *BookingService) UpdateBookingStatus(ctx context.Context, id uuid.UUID, 
 	_ = ownerID
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.New("booking not found")
+			return nil, domain.ErrBookingNotFound
 		}
 		return nil, errors.New("failed to get booking")
 	}
 
 	if currentStatus == status {
-		return nil, errors.New("booking already has this status")
+		return nil, domain.ErrBookingStatusUnchanged
 	}
 
 	if err := s.BookingRepo.UpdateBookingStatus(ctx, id, status); err != nil {

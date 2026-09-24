@@ -1,7 +1,11 @@
 package handlers
 
 import (
+	"errors"
+	"log"
 	"net/http"
+	"strings"
+	"tayo-booking/internal/domain"
 	"tayo-booking/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -40,6 +44,11 @@ func (h *BookingHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Validation failed", "details": err.Error()})
 		return
 	}
+	idempotencyKey := c.GetHeader("Idempotency-Key")
+	if strings.TrimSpace(idempotencyKey) == "" || len(idempotencyKey) > 255 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key header is required and must be at most 255 characters"})
+		return
+	}
 
 	tripID, _ := uuid.Parse(req.TripID)
 	seatID, _ := uuid.Parse(req.SeatID)
@@ -47,22 +56,15 @@ func (h *BookingHandler) Create(c *gin.Context) {
 	toStopID, _ := uuid.Parse(req.ToStopID)
 
 	ctx := c.Request.Context()
-	booking, err := h.Service.CreateBooking(ctx, userID, tripID, seatID, fromStopID, toStopID)
+	booking, replayed, err := h.Service.CreateBooking(ctx, userID, tripID, seatID, fromStopID, toStopID, idempotencyKey)
 	if err != nil {
-		switch err.Error() {
-		case "seat unavailable":
-			c.JSON(http.StatusConflict, gin.H{"error": "Seat is not available for the requested segment"})
-		case "from_stop_id does not belong to this trip's route",
-			"to_stop_id does not belong to this trip's route",
-			"from_stop_id must come before to_stop_id on the route",
-			"seat does not belong to this trip's bus":
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		writeBookingError(c, err)
 		return
 	}
 
+	if replayed {
+		c.Header("Idempotent-Replayed", "true")
+	}
 	c.JSON(http.StatusCreated, booking)
 }
 
@@ -81,7 +83,7 @@ func (h *BookingHandler) List(c *gin.Context) {
 	ctx := c.Request.Context()
 	bookings, err := h.Service.GetUserBookings(ctx, userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeBookingError(c, err)
 		return
 	}
 
@@ -109,14 +111,7 @@ func (h *BookingHandler) GetByID(c *gin.Context) {
 	ctx := c.Request.Context()
 	booking, err := h.Service.GetBookingByID(ctx, bookingID, userID)
 	if err != nil {
-		switch err.Error() {
-		case "booking not found":
-			c.JSON(http.StatusNotFound, gin.H{"error": "Booking not found"})
-		case "forbidden":
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		writeBookingError(c, err)
 		return
 	}
 
@@ -144,20 +139,7 @@ func (h *BookingHandler) Cancel(c *gin.Context) {
 	ctx := c.Request.Context()
 	err = h.Service.CancelBooking(ctx, bookingID, userID)
 	if err != nil {
-		switch err.Error() {
-		case "booking not found":
-			c.JSON(http.StatusNotFound, gin.H{"error": "Booking not found"})
-		case "forbidden":
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-		case "already cancelled":
-			c.JSON(http.StatusConflict, gin.H{"error": "Booking is already cancelled"})
-		case "confirmed booking cannot be cancelled by user":
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Confirmed bookings cannot be cancelled by users"})
-		case "cancellation window has passed":
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Cancellation window has passed"})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		writeBookingError(c, err)
 		return
 	}
 
@@ -185,7 +167,7 @@ func (h *BookingHandler) AdminList(c *gin.Context) {
 	ctx := c.Request.Context()
 	bookings, err := h.Service.GetAllBookings(ctx, status, tripID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeBookingError(c, err)
 		return
 	}
 
@@ -217,16 +199,38 @@ func (h *BookingHandler) AdminUpdateStatus(c *gin.Context) {
 	ctx := c.Request.Context()
 	booking, err := h.Service.UpdateBookingStatus(ctx, bookingID, req.Status)
 	if err != nil {
-		switch err.Error() {
-		case "booking not found":
-			c.JSON(http.StatusNotFound, gin.H{"error": "Booking not found"})
-		case "booking already has this status":
-			c.JSON(http.StatusConflict, gin.H{"error": "Booking is already in the requested status"})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		writeBookingError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, booking)
+}
+
+func writeBookingError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, domain.ErrFromStopNotOnRoute),
+		errors.Is(err, domain.ErrToStopNotOnRoute),
+		errors.Is(err, domain.ErrInvalidSegment),
+		errors.Is(err, domain.ErrSeatNotOnBus):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, domain.ErrForbidden):
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+	case errors.Is(err, domain.ErrBookingNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "Booking not found"})
+	case errors.Is(err, domain.ErrSeatUnavailable):
+		c.JSON(http.StatusConflict, gin.H{"error": "Seat is not available for the requested segment"})
+	case errors.Is(err, domain.ErrIdempotencyConflict):
+		c.JSON(http.StatusConflict, gin.H{"error": domain.ErrIdempotencyConflict.Error()})
+	case errors.Is(err, domain.ErrBookingAlreadyCancelled):
+		c.JSON(http.StatusConflict, gin.H{"error": "Booking is already cancelled"})
+	case errors.Is(err, domain.ErrBookingStatusUnchanged):
+		c.JSON(http.StatusConflict, gin.H{"error": "Booking is already in the requested status"})
+	case errors.Is(err, domain.ErrConfirmedBooking):
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Confirmed bookings cannot be cancelled by users"})
+	case errors.Is(err, domain.ErrCancellationWindowPassed):
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Cancellation window has passed"})
+	default:
+		log.Printf("[booking] unexpected failure: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+	}
 }
